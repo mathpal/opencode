@@ -6,6 +6,7 @@ import { Config } from "@/config/config"
 import { mapValues, mergeDeep, omit, pickBy, sortBy } from "remeda"
 import { NoSuchModelError, type Provider as SDK } from "ai"
 import { Npm } from "@opencode-ai/core/npm"
+import { makeAccountRotator, bedrockProfiles } from "@opencode-ai/core/plugin/provider/bedrock-account"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { Plugin } from "../plugin"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
@@ -303,6 +304,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
       const configProfile = providerConfig?.options?.profile
       const envProfile = env["AWS_PROFILE"]
       const profile = configProfile ?? envProfile
+      const configProfiles = bedrockProfiles(providerConfig?.options)
+      const resolvedProfiles = configProfiles.length ? configProfiles : profile ? [profile] : []
 
       const awsAccessKeyId = env["AWS_ACCESS_KEY_ID"]
       const configApiKey = providerConfig?.options?.apiKey
@@ -326,7 +329,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
       )
 
       if (
-        !profile &&
+        !resolvedProfiles.length &&
         !awsAccessKeyId &&
         !awsBearerToken &&
         !configApiKey &&
@@ -344,10 +347,13 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
       // Only use credential chain if no bearer token exists
       // Bearer token takes precedence over credential chain (profiles, access keys, IAM roles, web identity tokens)
       if (!awsBearerToken && !configApiKey) {
-        // Build credential provider options (only pass profile if specified)
-        const credentialProviderOptions = profile ? { profile } : {}
-
-        providerOptions.credentialProvider = fromNodeProviderChain(credentialProviderOptions)
+        // Multi-account load distribution: 2+ profiles -> session-sticky round-robin
+        // across accounts; otherwise the single-profile (or default) credential chain.
+        providerOptions.credentialProvider =
+          resolvedProfiles.length > 1
+            ? makeAccountRotator(resolvedProfiles.map((p) => fromNodeProviderChain({ profile: p })))
+            : fromNodeProviderChain(resolvedProfiles.length === 1 ? { profile: resolvedProfiles[0] } : {})
+        if (resolvedProfiles.length > 1) yield* Effect.logInfo("bedrock account pool", { profiles: resolvedProfiles })
       }
 
       // Add custom endpoint if specified (endpoint takes precedence over baseURL)
@@ -447,6 +453,69 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
             }
           }
 
+          return sdk.languageModel(modelID)
+        },
+      }
+    }),
+    // Second Bedrock provider pinned to a different AWS region (e.g. us-east-2) so
+    // region-restricted models (OpenAI GPT-5.x via bedrock-mantle) can run there
+    // while the primary "amazon-bedrock" provider stays in its own region. Region
+    // is per-provider-instance in @ai-sdk/amazon-bedrock, so a distinct provider ID
+    // is required. Self-contained: reuses the shared profile/rotator credential
+    // helpers and the mantle selector. Models route to bedrock-mantle when their
+    // npm is the "@ai-sdk/amazon-bedrock/mantle" subpath.
+    "amazon-bedrock-east": Effect.fnUntraced(function* () {
+      const providerConfig = (yield* dep.config()).provider?.["amazon-bedrock-east"]
+      const env = yield* dep.env()
+
+      const defaultRegion = providerConfig?.options?.region ?? "us-east-2"
+
+      const configProfile = providerConfig?.options?.profile
+      const configProfiles = bedrockProfiles(providerConfig?.options)
+      const resolvedProfiles = configProfiles.length ? configProfiles : configProfile ? [configProfile] : []
+
+      const awsBearerToken = process.env.AWS_BEARER_TOKEN_BEDROCK
+      const configApiKey = providerConfig?.options?.apiKey
+
+      if (
+        !resolvedProfiles.length &&
+        !env["AWS_ACCESS_KEY_ID"] &&
+        !awsBearerToken &&
+        !configApiKey &&
+        !env["AWS_WEB_IDENTITY_TOKEN_FILE"]
+      )
+        return { autoload: false }
+
+      const { fromNodeProviderChain } = yield* Effect.promise(() => import("@aws-sdk/credential-providers"))
+
+      const providerOptions: Record<string, any> = { region: defaultRegion }
+
+      // Same session-sticky multi-account load distribution as the primary
+      // provider: 2+ profiles -> rotator; otherwise single-profile/default chain.
+      if (!awsBearerToken && !configApiKey) {
+        providerOptions.credentialProvider =
+          resolvedProfiles.length > 1
+            ? makeAccountRotator(resolvedProfiles.map((p) => fromNodeProviderChain({ profile: p })))
+            : fromNodeProviderChain(resolvedProfiles.length === 1 ? { profile: resolvedProfiles[0] } : {})
+        if (resolvedProfiles.length > 1)
+          yield* Effect.logInfo("bedrock account pool", { provider: "amazon-bedrock-east", profiles: resolvedProfiles })
+      }
+
+      const endpoint = providerConfig?.options?.endpoint ?? providerConfig?.options?.baseURL
+      if (endpoint) providerOptions.baseURL = endpoint
+
+      return {
+        autoload: true,
+        options: providerOptions,
+        vars(options: Record<string, any>) {
+          return { AWS_REGION: options.region ?? defaultRegion }
+        },
+        async getModel(sdk: any, modelID: string, _options?: Record<string, any>, model?: Model) {
+          // GPT-5.x on bedrock-mantle is Responses-API-only (Chat Completions is
+          // not supported) and lives on the "/openai/v1" path, which is why this
+          // provider sets options.baseURL to ".../openai/v1" rather than the SDK's
+          // default ".../v1" used by gpt-oss.
+          if (model?.api.npm === "@ai-sdk/amazon-bedrock/mantle") return sdk.responses?.(modelID) ?? sdk.languageModel(modelID)
           return sdk.languageModel(modelID)
         },
       }
