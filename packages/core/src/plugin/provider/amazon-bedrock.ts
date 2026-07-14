@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import type { LanguageModelV3 } from "@ai-sdk/provider"
 import { define } from "../internal"
 import { ProviderV2 } from "../../provider"
+import { makeAccountRotator, bedrockProfiles } from "./bedrock-account"
 
 type MantleSDK = {
   languageModel: (modelID: string) => LanguageModelV3
@@ -98,8 +99,15 @@ export const AmazonBedrockPlugin = define({
           // Do not gate SDK creation on explicit AWS env vars. The default chain
           // also handles ~/.aws/credentials, SSO, process creds, and instance roles.
           const { fromNodeProviderChain } = yield* Effect.promise(() => import("@aws-sdk/credential-providers"))
-          options.credentialProvider = fromNodeProviderChain(profile ? { profile } : {})
+          const configProfiles = bedrockProfiles(options)
+          const profiles = configProfiles.length ? configProfiles : profile ? [profile] : []
+          options.credentialProvider =
+            profiles.length > 1
+              ? makeAccountRotator(profiles.map((p) => fromNodeProviderChain({ profile: p })))
+              : fromNodeProviderChain(profiles.length === 1 ? { profile: profiles[0] } : {})
+          if (profiles.length > 1) yield* Effect.logInfo("bedrock account pool", { profiles })
         }
+        delete (options as Record<string, unknown>).profiles
 
         if (evt.package === "@ai-sdk/amazon-bedrock/mantle") {
           const mod = yield* Effect.promise(() => import("@ai-sdk/amazon-bedrock/mantle"))
