@@ -19,6 +19,7 @@ import { Plugin } from "@/plugin"
 import { Permission } from "@/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EventV2 } from "@opencode-ai/core/event"
+import { withBedrockAccount, selectBedrockAccount, bedrockProfiles } from "@opencode-ai/core/plugin/provider/bedrock-account"
 import { Wildcard } from "@/util/wildcard"
 import { SessionID } from "@/session/schema"
 import { Auth } from "@/auth"
@@ -273,6 +274,23 @@ const live: Layer.Layer<
         "llm.provider": input.model.providerID,
         "llm.model": input.model.id,
       })
+      // Pin this session to one Bedrock account and log the session->account
+      // mapping once (grep "bedrock account" in the log). No-op otherwise.
+      const onBedrockAccount = <T>(run: () => PromiseLike<T>): PromiseLike<T> => {
+        if (!input.model.providerID.startsWith("amazon-bedrock")) return run()
+        const profiles = bedrockProfiles(item.options)
+        if (profiles.length <= 1) return run()
+        const selection = selectBedrockAccount(input.model.providerID, input.sessionID, profiles)
+        if (selection.newlyAssigned)
+          bridge.fork(
+            Effect.logInfo("bedrock account", {
+              "session.id": input.sessionID,
+              profile: selection.profile,
+              index: selection.index,
+            }),
+          )
+        return withBedrockAccount(selection.index, run)
+      }
       // Default runtime path: AI SDK owns provider execution and tool dispatch;
       // LLMAISDK.toLLMEvents below normalizes fullStream parts for the processor.
       return {
@@ -338,6 +356,11 @@ const live: Layer.Layer<
                   }
                   return args.params
                 },
+              },
+              {
+                specificationVersion: "v3" as const,
+                wrapStream: async ({ doStream }) => onBedrockAccount(doStream),
+                wrapGenerate: async ({ doGenerate }) => onBedrockAccount(doGenerate),
               },
             ],
           }),
