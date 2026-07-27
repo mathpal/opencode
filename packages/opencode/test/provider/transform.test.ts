@@ -3155,6 +3155,30 @@ describe("ProviderTransform.reasoningVariants", () => {
     })
   })
 
+  test("uses adaptive reasoning config for Claude Opus 5 on Bedrock", () => {
+    expect(
+      ProviderTransform.reasoningVariants(
+        model([{ type: "effort", values: ["high", "max"] }]),
+        target("@ai-sdk/amazon-bedrock", "global.anthropic.claude-opus-5"),
+      ),
+    ).toEqual({
+      high: {
+        reasoningConfig: {
+          type: "adaptive",
+          maxReasoningEffort: "high",
+          display: "summarized",
+        },
+      },
+      max: {
+        reasoningConfig: {
+          type: "adaptive",
+          maxReasoningEffort: "max",
+          display: "summarized",
+        },
+      },
+    })
+  })
+
   test("does not replace unsupported Anthropic Bedrock effort options with token budgets", () => {
     expect(
       ProviderTransform.reasoningVariants(
@@ -4464,6 +4488,12 @@ describe("ProviderTransform.variants", () => {
       {
         name: "opus 4.8",
         apiIds: ["claude-opus-4-8", "claude-opus-4.8"],
+        efforts: ["low", "medium", "high", "xhigh", "max"],
+        expectedHigh: { thinking: { type: "adaptive", display: "summarized" }, effort: "high" },
+      },
+      {
+        name: "opus 5",
+        apiIds: ["claude-opus-5", "claude-opus-5-20260724"],
         efforts: ["low", "medium", "high", "xhigh", "max"],
         expectedHigh: { thinking: { type: "adaptive", display: "summarized" }, effort: "high" },
       },
