@@ -1018,6 +1018,30 @@ it.effect("merges plugin arrays from global and local configs", () =>
   ),
 )
 
+it.effect("suppresses project plugin declarations without suppressing project config", () =>
+  withConfigTree(
+    {
+      global: { plugin: ["global-plugin"] },
+      project: { plugin: ["project-plugin"], model: "project/model" },
+      local: { plugin: ["local-plugin"], instructions: ["PROJECT.md"] },
+    },
+    withProcessEnv(
+      "OPENCODE_DISABLE_PROJECT_PLUGINS",
+      "1",
+      Effect.gen(function* () {
+        const config = yield* Config.use.get()
+        const plugins = config.plugin ?? []
+
+        expect(plugins.some((plugin) => plugin.includes("global-plugin"))).toBe(true)
+        expect(plugins.some((plugin) => plugin.includes("project-plugin"))).toBe(false)
+        expect(plugins.some((plugin) => plugin.includes("local-plugin"))).toBe(false)
+        expect(config.model).toBe("project/model")
+        expect(config.instructions).toContain("PROJECT.md")
+      }),
+    ),
+  ),
+)
+
 it.effect("global config remains global when project config is disabled", () =>
   withConfigTree(
     {

@@ -32,6 +32,7 @@ import { ConfigManaged } from "./managed"
 import { ConfigParse } from "./parse"
 import { ConfigPaths } from "./paths"
 import { ConfigPlugin } from "./plugin"
+import { shouldLoadProjectPluginDirectory, stripProjectPluginDeclaration } from "./project-plugin-policy"
 import { ConfigVariable } from "./variable"
 import { Npm } from "@opencode-ai/core/npm"
 import { withTransientReadRetry } from "@/util/effect-http-client"
@@ -405,7 +406,14 @@ const layer = Layer.effect(
 
         if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
           for (const file of yield* ConfigPaths.files("opencode", ctx.directory, ctx.worktree).pipe(Effect.orDie)) {
-            yield* merge(file, yield* loadFile(file, authEnv), "local")
+            const policy = stripProjectPluginDeclaration(
+              yield* loadFile(file, authEnv),
+              Flag.OPENCODE_DISABLE_PROJECT_PLUGINS,
+            )
+            if (policy.suppressed) {
+              yield* Effect.logWarning("suppressed project plugin declaration", { source: file })
+            }
+            yield* merge(file, policy.config, "local")
           }
         }
 
@@ -426,7 +434,14 @@ const layer = Layer.effect(
             for (const file of ["opencode.json", "opencode.jsonc"]) {
               const source = path.join(dir, file)
               yield* Effect.logDebug(`loading config from ${source}`)
-              yield* merge(source, yield* loadFile(source, authEnv))
+              const policy = stripProjectPluginDeclaration(
+                yield* loadFile(source, authEnv),
+                Flag.OPENCODE_DISABLE_PROJECT_PLUGINS && containsPath(source, ctx),
+              )
+              if (policy.suppressed) {
+                yield* Effect.logWarning("suppressed project plugin declaration", { source })
+              }
+              yield* merge(source, policy.config)
               result.agent ??= {}
               result.mode ??= {}
               result.plugin ??= []
@@ -461,8 +476,22 @@ const layer = Layer.effect(
           result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.loadMode(dir)))
           // Auto-discovered plugins under `.opencode/plugin(s)` are already local files, so ConfigPlugin.load
           // returns normalized Specs and we only need to attach origin metadata here.
-          const list = yield* Effect.promise(() => ConfigPlugin.load(dir))
-          yield* mergePluginOrigins(dir, list)
+          const loadProjectPlugins = shouldLoadProjectPluginDirectory(
+            Flag.OPENCODE_DISABLE_PROJECT_PLUGINS,
+            containsPath(dir, ctx),
+          )
+          if (loadProjectPlugins) {
+            const list = yield* Effect.promise(() => ConfigPlugin.load(dir))
+            yield* mergePluginOrigins(dir, list)
+          } else {
+            const pluginDirs = [path.join(dir, "plugin"), path.join(dir, "plugins")]
+            const suppressed = yield* Effect.forEach(pluginDirs, (item) => fs.existsSafe(item), { concurrency: 2 })
+            for (const [index, exists] of suppressed.entries()) {
+              if (exists) {
+                yield* Effect.logWarning("suppressed project plugin directory", { source: pluginDirs[index] })
+              }
+            }
+          }
         }
 
         if (process.env.OPENCODE_CONFIG_CONTENT) {
