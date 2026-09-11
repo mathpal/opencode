@@ -148,7 +148,14 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
     if (model.api.npm === "@ai-sdk/anthropic") return true
     if (model.api.npm === "@ai-sdk/openai") return true
     if (model.api.npm === "@ai-sdk/amazon-bedrock/mantle") return true
-    if (model.api.npm === "@ai-sdk/amazon-bedrock") return attachment.mime.startsWith("image/")
+    if (model.api.npm === "@ai-sdk/amazon-bedrock") {
+      // OpenAI-family models on Bedrock Converse (openai.gpt-*, with or without a
+      // CRIS prefix such as us./global.) accept images in user content but reject
+      // them inside toolResult.content with "This model doesn't support the image
+      // field for user messages". Hoist them into a user message instead.
+      if (/(^|\.)openai\./.test(model.api.id)) return false
+      return attachment.mime.startsWith("image/")
+    }
     if (model.api.npm === "@ai-sdk/xai") return attachment.mime.startsWith("image/")
     if (model.api.npm === "@ai-sdk/google-vertex/anthropic") return true
     if (model.api.npm === "@ai-sdk/google") {
