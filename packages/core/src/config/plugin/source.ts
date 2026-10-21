@@ -128,8 +128,15 @@ export const empty = makeLocationNode({
  * `OPENCODE_CONFIG` file, and path-less documents (wellknown and
  * `OPENCODE_CONFIG_CONTENT`). Project `.opencode` directories and ancestor
  * `opencode.json` files still supply agents, commands, skills, and settings,
- * but their plugin directories, plugin additions, and plugin removals (`-id`,
- * `-*`) are ignored, so a repository can neither run code nor disable ours.
+ * but their plugin directories, plugin additions (`"pkg-name"`), and plugin
+ * removals (`"-id"`, `"-*"`) are ignored so a repository cannot run arbitrary
+ * code or remove user-global plugins.
+ *
+ * What is NOT covered by this flag:
+ * - `policies` statements in project configs still participate in
+ *   `ManagedPolicy`; mitigated by a user-global `integration.use` plugin that
+ *   writes an allow policy via our config.
+ * - Project MCP server declarations are out of scope for this flag.
  */
 export interface Trust {
   readonly roots: readonly string[]
