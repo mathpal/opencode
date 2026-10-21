@@ -17,6 +17,11 @@ export type Config = RouteDefaultsInput & {
   readonly credentials?: BedrockCredentials
   /** Shared config profile for the default credential chain. */
   readonly profile?: string
+  /**
+   * Shared config profiles to rotate across (mathpal fork). Two or more pin each
+   * session to one profile and round-robin new sessions; one behaves like `profile`.
+   */
+  readonly profiles?: readonly string[]
   /** AWS region. Falls back to `credentials.region`, `AWS_REGION`, `AWS_DEFAULT_REGION`, then `us-east-1`. */
   readonly region?: string
   /** Override the computed `https://bedrock-runtime.<region>.amazonaws.com` URL. */
@@ -29,6 +34,7 @@ export interface Settings extends ProviderPackage.Settings {
   readonly baseURL?: string
   readonly credentials?: BedrockCredentials
   readonly profile?: string
+  readonly profiles?: readonly string[]
   readonly region?: string
   readonly topP?: number
   readonly thinking?: BedrockConverse.OptionsInput["thinking"]
@@ -38,7 +44,7 @@ export const routes = [BedrockConverse.route]
 const bedrockBaseURL = (region: string) => `https://bedrock-runtime.${region}.amazonaws.com`
 
 const configuredRoute = (input: Config) => {
-  const { apiKey, auth, credentials, profile, region, baseURL, ...rest } = input
+  const { apiKey, auth, credentials, profile, profiles, region, baseURL, ...rest } = input
   if (auth === "bearer" && apiKey === undefined && process.env.AWS_BEARER_TOKEN_BEDROCK === undefined)
     throw new ProviderConfigurationError({ provider: id, message: "Amazon Bedrock bearer auth requires apiKey" })
   if (auth === "sigv4" && apiKey !== undefined)
@@ -49,7 +55,7 @@ const configuredRoute = (input: Config) => {
     provider: id,
     providerMetadataKey: "bedrock",
     endpoint: { baseURL: baseURL ?? bedrockBaseURL(resolvedRegion) },
-    auth: BedrockAuth.resolveAuth({ apiKey, credentials, profile }, resolvedRegion, { mode: auth }),
+    auth: BedrockAuth.resolveAuth({ apiKey, credentials, profile, profiles }, resolvedRegion, { mode: auth }),
   })
 }
 
@@ -74,5 +80,6 @@ export const model: ProviderPackage.Definition<Settings>["model"] = (modelID, se
     http: settings.body === undefined ? undefined : { body: { ...settings.body } },
     providerOptions: settings.thinking === undefined ? undefined : { thinking: settings.thinking },
     profile: settings.profile,
+    profiles: settings.profiles,
     region: settings.region,
   }).model(modelID)
