@@ -24,6 +24,11 @@ export type Config = Omit<RouteDefaultsInput, "providerOptions"> & {
   readonly credentials?: Credentials
   /** Shared config profile for the default credential chain. */
   readonly profile?: string
+  /**
+   * Shared config profiles to rotate across (mathpal fork). Two or more pin each
+   * session to one profile and round-robin new sessions; one behaves like `profile`.
+   */
+  readonly profiles?: readonly string[]
   readonly region?: string
   readonly providerOptions?: OpenAIProviderOptionsInput | AnthropicMessages.ProviderOptionsInput
 }
@@ -35,6 +40,7 @@ export type Settings<Options = OpenAIProviderOptionsInput> = ProviderPackage.Set
     readonly baseURL?: string
     readonly credentials?: Credentials
     readonly profile?: string
+    readonly profiles?: readonly string[]
     readonly region?: string
     readonly topP?: number
   }
@@ -101,6 +107,7 @@ const defaults = (input: Config) => {
     baseURL: _baseURL,
     credentials: _credentials,
     profile: _profile,
+    profiles: _profiles,
     region: _region,
     ...rest
   } = input
@@ -154,6 +161,7 @@ const fromSettings = ({
   credentials,
   headers,
   profile,
+  profiles,
   region,
   topP,
   ...providerOptions
@@ -167,6 +175,7 @@ const fromSettings = ({
     headers,
     http: body === undefined ? undefined : { body },
     profile,
+    profiles,
     providerOptions,
     region,
   })

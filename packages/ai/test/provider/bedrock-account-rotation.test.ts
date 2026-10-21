@@ -6,8 +6,8 @@ import path from "node:path"
 import { Effect } from "effect"
 import { HttpClientRequest } from "effect/http"
 import { LLM, type LanguageModel } from "../../src/index.js"
-import { AmazonBedrock } from "../../src/providers.js"
-import { LLMClient } from "../../src/route/client.js"
+import { AmazonBedrock, AmazonBedrockMantle } from "../../src/providers.js"
+import { compileRequest, LLMClient } from "../../src/route/client.js"
 import { it } from "../lib/effect.js"
 import { withProcessEnv } from "../lib/env.js"
 import { dynamicResponse } from "../lib/http.js"
@@ -181,5 +181,24 @@ describe("Bedrock account rotation (Converse)", () => {
       yield* send(model, "ses_b")
       expect(helper.loads()).toBe(2)
     }).pipe(withProcessEnv({ ...noAmbientAWS, ...helper.env }))
+  })
+})
+
+describe("Bedrock account rotation (Mantle)", () => {
+  it.effect("rotates Mantle Responses requests across the pool and keeps profiles out of the body", () => {
+    const profiles = names(2)
+    return Effect.gen(function* () {
+      const model = AmazonBedrockMantle.responsesModel("openai.gpt-5.5", {
+        region: "us-east-2",
+        baseURL: "https://bedrock-mantle.us-east-2.api.aws/openai/v1",
+        profiles,
+      })
+      const prepared = yield* compileRequest(LLM.request({ model, prompt: "Hi" }))
+      expect(prepared.body).not.toHaveProperty("profiles")
+      // compileRequest consumes the first pool selection, so the indices are offset by 1
+      expect(yield* send(model, "ses_a", "text/event-stream")).toBe("AKIAPOOL1EXAMPLE")
+      expect(yield* send(model, "ses_b", "text/event-stream")).toBe("AKIAPOOL0EXAMPLE")
+      expect(yield* send(model, "ses_a", "text/event-stream")).toBe("AKIAPOOL1EXAMPLE")
+    }).pipe(withProcessEnv({ ...noAmbientAWS, ...poolFiles(profiles) }))
   })
 })
