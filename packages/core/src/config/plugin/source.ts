@@ -3,12 +3,15 @@ export * as ConfigPluginSource from "./source.js"
 import { Directory, Document, type Entry } from "@opencode/schema/config"
 import { ConfigPlugin } from "@opencode/schema/config/plugin"
 import { FSUtil } from "@opencode/util/fs-util"
+import { Global } from "@opencode/util/global"
 import { Host } from "@opencode/plugin/host"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { Context, Effect, Layer, Option, PubSub, Scope, Stream } from "effect"
 import path from "path"
 import { fileURLToPath, pathToFileURL } from "url"
 import { Config } from "../../config.js"
+import { ConfigDiscovery } from "../discovery.js"
+import { ProjectPlugins } from "./project-plugins.js"
 import { Watcher } from "../../filesystem/watcher.js"
 import { Location } from "../../location.js"
 import { PluginSourceDirectory } from "../../plugin/source-directory.js"
@@ -39,6 +42,14 @@ export const layer = Layer.effect(
     const watcher = yield* Watcher.Service
     const fs = yield* FSUtil.Service
     const location = yield* Location.Service
+    const global = yield* Global.Service
+    // mathpal fork: the launcher exports OPENCODE_DISABLE_PROJECT_PLUGINS before the server starts.
+    const trust: Trust | undefined = projectPluginsDisabled()
+      ? {
+          roots: [global.config, ConfigDiscovery.systemDirectory()],
+          files: process.env.OPENCODE_CONFIG ? [path.resolve(process.env.OPENCODE_CONFIG)] : [],
+        }
+      : undefined
     const configuredChanges = yield* PubSub.unbounded<void>()
     const watched = new Set<string>()
 
@@ -74,7 +85,7 @@ export const layer = Layer.effect(
     return Service.of({
       operations: Effect.fn("ConfigPluginSource.operations")(function* () {
         const entries = yield* config.entries()
-        const operations = yield* scan(fs, location, entries)
+        const operations = yield* scan(fs, location, entries, trust)
         yield* watchConfiguredSources(entries, operations)
         return operations
       }),
@@ -95,7 +106,7 @@ export const layer = Layer.effect(
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [Config.node, FSUtil.node, Watcher.node, Location.node],
+  deps: [Config.node, FSUtil.node, Global.node, Watcher.node, Location.node],
 })
 
 export const empty = makeLocationNode({
@@ -110,6 +121,33 @@ export const empty = makeLocationNode({
   deps: [],
 })
 
+/**
+ * Plugin trust for `OPENCODE_DISABLE_PROJECT_PLUGINS` (mathpal fork). When the
+ * flag is set, only config sources the user controls may contribute plugins:
+ * the global config directory, the system directory, the explicit
+ * `OPENCODE_CONFIG` file, and path-less documents (wellknown and
+ * `OPENCODE_CONFIG_CONTENT`). Project `.opencode` directories and ancestor
+ * `opencode.json` files still supply agents, commands, skills, and settings,
+ * but their plugin directories, plugin additions, and plugin removals (`-id`,
+ * `-*`) are ignored, so a repository can neither run code nor disable ours.
+ */
+export interface Trust {
+  readonly roots: readonly string[]
+  readonly files: readonly string[]
+}
+
+export const projectPluginsDisabled = ProjectPlugins.disabled
+
+export function partition(entries: readonly Entry[], trust: Trust | undefined) {
+  if (trust === undefined) return { kept: [...entries], suppressed: [] as Entry[] }
+  const allowed = (entry: Entry) => {
+    const source = entry.path
+    if (source === undefined) return true
+    return trust.files.includes(source) || trust.roots.some((root) => FSUtil.contains(root, source))
+  }
+  return { kept: entries.filter(allowed), suppressed: entries.filter((entry) => !allowed(entry)) }
+}
+
 function parse(input: ConfigPlugin.Plugin): Operation {
   if (typeof input !== "string") {
     return { type: "add", target: input.package, options: input.options ?? {} }
@@ -123,15 +161,26 @@ const scan = Effect.fn("ConfigPluginSource.scan")(function* (
   fs: FSUtil.Interface,
   location: Location.Interface,
   entries: readonly Entry[],
+  trust?: Trust,
 ) {
+  const { kept, suppressed } = partition(entries, trust)
+  yield* Effect.forEach(suppressed, (entry) =>
+    Effect.gen(function* () {
+      const plugins =
+        entry.type === "directory"
+          ? yield* PluginSourceDirectory.discover(fs, entry.path)
+          : (entry.info.plugins ?? []).map((plugin) => (typeof plugin === "string" ? plugin : plugin.package))
+      if (plugins.length > 0) yield* Effect.logWarning("suppressed project plugins", { source: entry.path, plugins })
+    }),
+  )
   const discovered = yield* Effect.forEach(
-    entries.filter((entry): entry is Directory => entry.type === "directory"),
+    kept.filter((entry): entry is Directory => entry.type === "directory"),
     (entry) =>
       PluginSourceDirectory.discover(fs, entry.path).pipe(
         Effect.map((targets) => targets.map((target): Operation => ({ type: "add", target, options: {} }))),
       ),
   ).pipe(Effect.map((items) => items.flat()))
-  const configured = entries
+  const configured = kept
     .filter((entry): entry is Document => entry.type === "document")
     .flatMap((entry) =>
       (entry.info.plugins ?? []).map(parse).map((operation) => {
