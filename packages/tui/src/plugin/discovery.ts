@@ -1,11 +1,18 @@
 import { readdir, stat } from "node:fs/promises"
 import path from "node:path"
+import { ProjectPlugins } from "@opencode/core/config/plugin/project-plugins"
 import { localSource } from "@opencode/plugin/source"
 import { isMissingPath, localProjectDirectory, projectConfigDirectories } from "../util/config-directories"
 
 export { localSource }
 
-export async function localPluginDirectories(cwd: string, configDirectory: string) {
+export async function localPluginDirectories(
+  cwd: string,
+  configDirectory: string,
+  env: NodeJS.ProcessEnv = process.env,
+) {
+  // mathpal fork: with OPENCODE_DISABLE_PROJECT_PLUGINS, repositories cannot add TUI plugins.
+  if (ProjectPlugins.disabled(env)) return [path.join(configDirectory, "plugins")]
   const projectDirectory = await localProjectDirectory(cwd)
   const projectConfig = path.join(projectDirectory, ".opencode")
   const directories = [configDirectory, ...projectConfigDirectories(projectDirectory, cwd)]
