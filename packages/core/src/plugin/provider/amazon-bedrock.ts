@@ -87,7 +87,11 @@ export const AmazonBedrockPlugin = define({
         if (!isBedrock(item.provider)) continue
         evt.update(item.provider.id, (provider) => {
           const settings = provider.settings ?? {}
-          const chain = typeof settings.profile === "string" || CHAIN_ENV.some((name) => process.env[name])
+          // mathpal fork: a `profiles` pool authenticates through the same chain as `profile`.
+          const pool =
+            Array.isArray(settings.profiles) &&
+            settings.profiles.some((profile) => typeof profile === "string" && profile.trim() !== "")
+          const chain = typeof settings.profile === "string" || pool || CHAIN_ENV.some((name) => process.env[name])
           // SigV4 authenticates through the AWS default chain rather than a key
           // credential, so ambient AWS configuration is what makes Bedrock usable.
           if (chain && provider.activation === "auto") provider.activation = "enabled"
